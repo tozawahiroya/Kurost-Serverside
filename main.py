@@ -1,125 +1,152 @@
-from fastapi import FastAPI, Request, status
-from typing import Optional
-from fastapi.middleware.cors import CORSMiddleware
-import openai
-import os
+from fastapi import FastAPI, Depends, HTTPException
+from starlette.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel  # リクエストbodyを定義するために必要
-from typing import List  # ネストされたBodyを定義するために必要
-from fastapi.exceptions import RequestValidationError
+from typing import List
+import mysql.connector
+import os
 import json
+from datetime import datetime
 
-
-openai.api_key = os.environ.get("OPEN_AI_KEY")
-openai.api_base = os.environ.get("OPEN_AI_ENDPOINT")
-openai.api_type = "azure"
-openai.api_version = "2023-03-15-preview"
-
-
-# 商品マスター
-products_data = [
-        {
-            "id": 1,
-            "unique_id":1111111111,
-            "product_name": "おーいお茶",
-            "amount": 1,
-            "price": 150,
-            "total_amount": 5000
-        },
-        {
-            "id": 2,
-            "unique_id":2222222222,
-            "product_name": "サイダー",
-            "amount": 1,
-            "price": 300,
-            "total_amount": 1
-        },
-        {
-            "id": 3,
-            "unique_id":3333333333,
-            "product_name": "山崎ぱん",
-            "amount": 1,
-            "price": 100,
-            "total_amount": 1
-        }
-        # 他の商品情報も追加できます
-        ]
-# リクエストbodyを定義
-class ProductItem(BaseModel):
-    id: int
-    unique_id: int
-    product_name: str
-    amount: int
-    price: int
-    total_amount: int
-# 空の配列を用意
-purchaseItems = []
 
 app = FastAPI()
 
-# エラー確認
-@app.exception_handler(RequestValidationError)
-async def handler(request:Request, exc:RequestValidationError):
-    print(exc)
-    return JSONResponse(content={}, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+##DB接続
+config = {
+    "user": "tozawa92",
+    "password": "Hiroya-92",  # 実際のパスワードに置き換えてください
+    "host": "kurost-myaql.mysql.database.azure.com",
+    "port": 3306,
+    "database": "kurost-pos",  # 実際のデータベース名に置き換えてください
+}
 
-# アクセス制限解除
+
+def get_db():
+    try:
+        db = mysql.connector.connect(**config)
+        yield db
+    finally:
+        db.close()
+
+
+##CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://example.com"],  # 許可するフロントエンドのオリジン
-    allow_origin_regex=r"^https://example-(.+)\.com$",  # 追加で許可するフロントエンドのオリジンの正規表現
-    allow_credentials=True,  # 資格情報の共有の可否
-    allow_methods=["*"],  # 許可するHTTPリクエストメソッド
-    allow_headers=["*"],  # フロントエンドからの認可するHTTPヘッダー情報
-    expose_headers=["Example-Header"],  # フロントエンドがアクセスできるHTTPヘッダー情報
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-#React側から製品データ1個ずつ受け取り、「purchaseItems」に格納
-@app.post("/productcode/api")
-async def product(productitem: ProductItem):
-    #辞書型へ変更
-    product_dict = {
-        "id": productitem.id,
-        "unique_id": productitem.unique_id,
-        "product_name": productitem.product_name,
-        "amount": productitem.amount,
-        "price": productitem.price,
-        "total_amount": productitem.total_amount
-    }
-    purchaseItems.append(product_dict)
 
-#受け取った商品データから合計金額を計算、「purchaseItems」をリセット
-@app.get("/productcode/api/{count}")
-async def register_product_list(count: int):
-    #DBに引き渡す処理
-    # print(purchaseItems)
+class Items(BaseModel):
+    PRD_ID: int
+    PRD_CODE: str
+    PRD_NAME: str
+    PRD_PRICE: int
 
-    #合計金額を計算
-    total_price = 0
-    print(len(purchaseItems))
-    
-    for i in range(len(purchaseItems)):
-        print(total_price)
-        total_price = purchaseItems[i]["price"] + total_price
-    #商品リストをクリア
-    del purchaseItems[:]
 
-    return {"total_price":total_price}
+class PurchaseList(BaseModel):
+    EMP_CD: str
+    STORE_CD: str
+    POS_NO: str
+    items: List[Items]
 
-#商品コードを受け取り、DBとマッチングする？
+
 @app.get("/productcode/{number}")
-async def get_products(number: int):
-    # DBに繋いで処理するバージョン
-    #########################
-    #pending
-    #########################
+async def product_test(
+    number: int, db: mysql.connector.MySQLConnection = Depends(get_db)
+):
+    cursor = db.cursor()
+    productCode_to_search = number
+    query = (
+        "SELECT ProductID, ProductName, Price FROM ProductMaster WHERE ProductCode = %s"
+    )
+    cursor.execute(query, (productCode_to_search,))
+    result = cursor.fetchall()
 
-    # FastAPI内で処理するバージョン
-    for i in range(len(products_data)):
-        temp_data = products_data[i]
-        product_code = temp_data["unique_id"]
-        if product_code == number:
-            matching_data = {"product": temp_data}
-            break
-    return matching_data
+    if result:
+        product_ID, product_name, price = result[0]
+        singleproduct = {
+            "PRD_ID": product_ID,
+            "PRD_NAME": product_name,
+            "PRD_PRICE": price,
+        }
+        # singleproduct_json = json.dumps(singleproduct, ensure_ascii=False, indent=4)
+        return singleproduct
+    else:
+        return {}
+
+
+@app.post("/create_purchase")
+async def create_purchase(
+    purchase: PurchaseList,
+    db: mysql.connector.MySQLConnection = Depends(get_db),
+):  # Listのアノテーションを修正
+    #  [Next]一回の受け取りになるように変更
+    # 1 変数受け取る
+    # 2 合計金額取得
+    # 3 最新のTRD_ID取得
+    # 4 Transaction tableに追加
+    # 5 最新のID取得
+    # 6 Transactiondetail tableの更新
+    # 7 return(Status, 合計金額)
+
+    cursor = db.cursor()
+
+    # 最新TRD_ID取得
+    cursor.execute("SELECT MAX(TRD_ID) FROM transactions;")
+    max_id_result = cursor.fetchone()
+    if max_id_result and max_id_result[0] is not None:
+        new_trd_id = max_id_result[0] + 1
+    else:
+        new_trd_id = 1  # テーブルが空の場合のため
+
+    # Transaction table用
+    TRD_ID = new_trd_id
+    DATETIME = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    EMP_CD = purchase.EMP_CD
+    STORE_CD = purchase.STORE_CD
+    POS_NO = purchase.POS_NO
+    TOTAL_AMT = sum(item.PRD_PRICE for item in purchase.items)
+
+    # Transaction table　更新
+    query = """
+        INSERT INTO transactions (TRD_ID, DATETIME, EMP_CD, STORE_CD, POS_NO, TOTAL_AMT) 
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """
+    values = (TRD_ID, DATETIME, EMP_CD, STORE_CD, POS_NO, TOTAL_AMT)
+    cursor.execute(query, values)
+
+    # transactiondetails table書き込み
+    for index, item in enumerate(purchase.items, 1):
+        query = """
+        INSERT INTO transactiondetails (TRD_ID, DTL_ID, PRD_ID, PRD_CODE, PRD_NAME, PRD_PRICE)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """
+        cursor.execute(
+            query,
+            (TRD_ID, index, item.PRD_ID, item.PRD_CODE, item.PRD_NAME, item.PRD_PRICE),
+        )
+
+    db.commit()
+    return {"TOTAL_AMT": TOTAL_AMT}
+
+    # try:
+    #     for purchase in purchase:
+    #         cursor.execute(
+    #             "INSERT INTO TransactionDetails (TRD_ID, DTL_ID, PRD_ID, PRD_CODE, PRD_NAME, PRD_PRICE) VALUES (%s, %s, %s, %s, %s, %s)",
+    #             (
+    #                 detail.TRD_ID,
+    #                 detail.DTL_ID,
+    #                 detail.PRD_ID,
+    #                 detail.PRD_CODE,
+    #                 detail.PRD_NAME,
+    #                 detail.PRD_PRICE,
+    #             ),
+    #         )
+    #     db.commit()
+    #     return {"status": "success", "message": "Details inserted successfully."}
+
+    # except mysql.connector.Error as e:
+    #     db.rollback()
+    #     raise HTTPException(status_code=400, detail=f"MySQL Error: {e}")
