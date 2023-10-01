@@ -56,7 +56,7 @@ async def get_products(
     db: mysql.connector.MySQLConnection = Depends(get_db)
 ):
     cursor = db.cursor()
-    query = "SELECT ProductID, ProductCode, ProductName, Price FROM product_dummy"
+    query = "SELECT ProductID, ProductCode, ProductName, Price FROM productmaster"
     cursor.execute(query)
     results = cursor.fetchall()
 
@@ -73,6 +73,31 @@ async def get_products(
 
     return {"products": products}
 
+
+
+# @app.get("/productcode/{number}")
+# async def product_test(
+#     number: int, db: mysql.connector.MySQLConnection = Depends(get_db)
+# ):
+#     cursor = db.cursor()
+#     productCode_to_search = number
+#     query = (
+#         "SELECT ProductID, ProductName, Price FROM ProductMaster WHERE ProductCode = %s"
+#     )
+#     cursor.execute(query, (productCode_to_search,))
+#     result = cursor.fetchall()
+
+#     if result:
+#         product_ID, product_name, price = result[0]
+#         singleproduct = {
+#             "PRD_ID": product_ID,
+#             "PRD_NAME": product_name,
+#             "PRD_PRICE": price,
+#         }
+#         # singleproduct_json = json.dumps(singleproduct, ensure_ascii=False, indent=4)
+#         return singleproduct
+#     else:
+#         return {}
 
 @app.post("/create_purchase")
 async def create_purchase(
@@ -104,29 +129,38 @@ async def create_purchase(
     EMP_CD = purchase.EMP_CD
     STORE_CD = purchase.STORE_CD
     POS_NO = purchase.POS_NO
-    TOTAL_AMT = sum(item.PRD_PRICE for item in purchase.items)
+    TTL_AMT_EX_TAX = sum(item.PRD_PRICE for item in purchase.items)
+    TOTAL_AMT = round(TTL_AMT_EX_TAX * 1.1)
+
+
 
     # Transaction table　更新
     query = """
-        INSERT INTO transactions (TRD_ID, DATETIME, EMP_CD, STORE_CD, POS_NO, TOTAL_AMT) 
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO transactions (TRD_ID, DATETIME, EMP_CD, STORE_CD, POS_NO, TOTAL_AMT,TTL_AMT_EX_TAX) 
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
     """
-    values = (TRD_ID, DATETIME, EMP_CD, STORE_CD, POS_NO, TOTAL_AMT)
+    values = (TRD_ID, DATETIME, EMP_CD, STORE_CD, POS_NO, TOTAL_AMT,TTL_AMT_EX_TAX)
     cursor.execute(query, values)
 
     # transactiondetails table書き込み
+    TAX_ID = '10'
     for index, item in enumerate(purchase.items, 1):
         query = """
-        INSERT INTO transactiondetails (TRD_ID, DTL_ID, PRD_ID, PRD_CODE, PRD_NAME, PRD_PRICE)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO transactiondetails (TRD_ID, DTL_ID, PRD_ID, PRD_CODE, PRD_NAME, PRD_PRICE, TAX_ID)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         """
         cursor.execute(
             query,
-            (TRD_ID, index, item.PRD_ID, item.PRD_CODE, item.PRD_NAME, item.PRD_PRICE),
+            (TRD_ID, index, item.PRD_ID, item.PRD_CODE, item.PRD_NAME, item.PRD_PRICE, TAX_ID),
         )
 
     db.commit()
     return {"TOTAL_AMT": TOTAL_AMT}
+
+
+
+
+
 
     # try:
     #     for purchase in purchase:
